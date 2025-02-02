@@ -23,7 +23,7 @@ class LrcLine extends UnsyncLyricLine {
     return {"time": start.toString(), "content": content}.toString();
   }
 
-  /// line: [mm:ss.msmsms]content
+  /// line: [mm:ss.msms]content
   static LrcLine? fromLine(String line, [int? offset]) {
     if (line.trim().isEmpty) {
       return null;
@@ -65,6 +65,120 @@ class LrcLine extends UnsyncLyricLine {
       content,
       isBlank: content.isEmpty,
     );
+  }
+
+  /// Parse enhanced LRC format 1: [mm:ss.msms]Word[mm:ss.msms]Word[mm:ss.msms]Word[mm:ss.msms]
+  static SyncLyricLine? fromEnhancedLrcFormat1(String line, [int? offset]) {
+    if (line.trim().isEmpty) {
+      return null;
+    }
+
+    final lineStartMatch = RegExp(r'^\[(\d{2}:\d{2}\.\d{2,})\]').firstMatch(line);
+    if (lineStartMatch == null) {
+      return null;
+    }
+
+    final lineStartTimeString = lineStartMatch.group(1)!;
+    final lineStartTimeList = lineStartTimeString.split(":");
+    int? lineStartMinute = int.tryParse(lineStartTimeList[0]);
+    double? lineStartSecond = double.tryParse(lineStartTimeList[1]);
+    if (lineStartMinute == null || lineStartSecond == null) {
+      return null;
+    }
+
+    final lineStartInMilliseconds = ((lineStartMinute * 60 + lineStartSecond) * 1000).toInt();
+    final lineStart = Duration(milliseconds: max(lineStartInMilliseconds - (offset ?? 0), 0));
+
+    final wordMatches = RegExp(r'\[(\d{2}:\d{2}\.\d{2,})\]([^[]+)').allMatches(line);
+    if (wordMatches.isEmpty) {
+      return null;
+    }
+
+    final words = <SyncLyricWord>[];
+    Duration previousWordEnd = lineStart;
+    for (final match in wordMatches) {
+      final wordEndTimeString = match.group(1)!;
+      final wordEndTimeList = wordEndTimeString.split(":");
+      int? wordEndMinute = int.tryParse(wordEndTimeList[0]);
+      double? wordEndSecond = double.tryParse(wordEndTimeList[1]);
+      if (wordEndMinute == null || wordEndSecond == null) {
+        continue;
+      }
+
+      final wordEndInMilliseconds = ((wordEndMinute * 60 + wordEndSecond) * 1000).toInt();
+      final wordEnd = Duration(milliseconds: max(wordEndInMilliseconds - (offset ?? 0), 0));
+
+      final wordContent = match.group(2)!;
+      final wordStart = previousWordEnd;
+      final wordLength = wordEnd - wordStart;
+
+      words.add(SyncLyricWord(wordStart, wordLength, wordContent));
+      previousWordEnd = wordEnd;
+    }
+
+    final lineLength = previousWordEnd - lineStart;
+    return SyncLyricLine(lineStart, lineLength, words);
+  }
+
+  /// Parse enhanced LRC format 2: [mm:ss.msms]<mm:ss.msms>Word<mm:ss.msms>Word<mm:ss.msms>Word
+  static SyncLyricLine? fromEnhancedLrcFormat2(String line, [int? offset]) {
+    if (line.trim().isEmpty) {
+      return null;
+    }
+
+    final lineStartMatch = RegExp(r'^\[(\d{2}:\d{2}\.\d{2,})\]').firstMatch(line);
+    if (lineStartMatch == null) {
+      return null;
+    }
+
+    final lineStartTimeString = lineStartMatch.group(1)!;
+    final lineStartTimeList = lineStartTimeString.split(":");
+    int? lineStartMinute = int.tryParse(lineStartTimeList[0]);
+    double? lineStartSecond = double.tryParse(lineStartTimeList[1]);
+    if (lineStartMinute == null || lineStartSecond == null) {
+      return null;
+    }
+
+    final lineStartInMilliseconds = ((lineStartMinute * 60 + lineStartSecond) * 1000).toInt();
+    final lineStart = Duration(milliseconds: max(lineStartInMilliseconds - (offset ?? 0), 0));
+
+    final wordMatches = RegExp(r'<(\d{2}:\d{2}\.\d{2,})>([^<]+)<(\d{2}:\d{2}\.\d{2,})>').allMatches(line);
+    if (wordMatches.isEmpty) {
+      return null;
+    }
+
+    final words = <SyncLyricWord>[];
+    for (final match in wordMatches) {
+      final wordStartTimeString = match.group(1)!;
+      final wordStartTimeList = wordStartTimeString.split(":");
+      int? wordStartMinute = int.tryParse(wordStartTimeList[0]);
+      double? wordStartSecond = double.tryParse(wordStartTimeList[1]);
+      if (wordStartMinute == null || wordStartSecond == null) {
+        continue;
+      }
+
+      final wordStartInMilliseconds = ((wordStartMinute * 60 + wordStartSecond) * 1000).toInt();
+      final wordStart = Duration(milliseconds: max(wordStartInMilliseconds - (offset ?? 0), 0));
+
+      final wordEndTimeString = match.group(3)!;
+      final wordEndTimeList = wordEndTimeString.split(":");
+      int? wordEndMinute = int.tryParse(wordEndTimeList[0]);
+      double? wordEndSecond = double.tryParse(wordEndTimeList[1]);
+      if (wordEndMinute == null || wordEndSecond == null) {
+        continue;
+      }
+
+      final wordEndInMilliseconds = ((wordEndMinute * 60 + wordEndSecond) * 1000).toInt();
+      final wordEnd = Duration(milliseconds: max(wordEndInMilliseconds - (offset ?? 0), 0));
+
+      final wordContent = match.group(2)!;
+      final wordLength = wordEnd - wordStart;
+
+      words.add(SyncLyricWord(wordStart, wordLength, wordContent));
+    }
+
+    final lineLength = words.isNotEmpty ? words.last.start + words.last.length - lineStart : Duration.zero;
+    return SyncLyricLine(lineStart, lineLength, words);
   }
 }
 
@@ -148,13 +262,18 @@ class Lrc extends Lyric {
       break;
     }
 
-    var lines = <LrcLine>[];
+    var lines = <LyricLine>[];
     for (int i = 0; i < lrcLines.length; i++) {
       var lyricLine = LrcLine.fromLine(lrcLines[i], offsetInMilliseconds);
       if (lyricLine == null) {
-        continue;
+        lyricLine = LrcLine.fromEnhancedLrcFormat1(lrcLines[i], offsetInMilliseconds);
+        if (lyricLine == null) {
+          lyricLine = LrcLine.fromEnhancedLrcFormat2(lrcLines[i], offsetInMilliseconds);
+        }
       }
-      lines.add(lyricLine);
+      if (lyricLine != null) {
+        lines.add(lyricLine);
+      }
     }
 
     if (lines.isEmpty) {
@@ -162,35 +281,21 @@ class Lrc extends Lyric {
     }
 
     for (var i = 0; i < lines.length - 1; i++) {
-      lines[i].length = lines[i + 1].start - lines[i].start;
+      if (lines[i] is LrcLine && lines[i + 1] is LrcLine) {
+        (lines[i] as LrcLine).length = (lines[i + 1] as LrcLine).start - (lines[i] as LrcLine).start;
+      }
     }
-    if (lines.isNotEmpty) {
-      lines.last.length = Duration.zero;
+    if (lines.isNotEmpty && lines.last is LrcLine) {
+      (lines.last as LrcLine).length = Duration.zero;
     }
 
     final result = Lrc(lines, source);
     result._sort();
 
-    if (separator == null) {
-      return result;
+    if (separator != null) {
+      result = result._combineLrcLine(separator);
     }
 
-    return result._combineLrcLine(separator);
-  }
-
-  /// 只支持读取 ID3V2, VorbisComment, Mp4Ilst 存储的内嵌歌词
-  /// 以及相同目录相同文件名的 .lrc 外挂歌词（utf-8 or utf-16）
-  static Future<Lrc?> fromAudioPath(
-    Audio belongTo, {
-    String? separator = "┃",
-  }) async {
-    Lrc? lyric = await getLyricFromPath(path: belongTo.path).then((value) {
-      if (value == null) {
-        return null;
-      }
-      return Lrc.fromLrcText(value, LrcSource.local, separator: separator);
-    });
-
-    return lyric;
+    return result;
   }
 }
