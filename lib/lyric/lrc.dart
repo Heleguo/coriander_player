@@ -51,7 +51,6 @@ class LrcLine extends UnsyncLyricLine {
   }
 
   static LrcLine? _parseEnhancedLine(String line, int? offset) {
-    // 尝试解析第一种格式：[mm:ss.ms]Word[mm:ss.ms]Word...
     final bracketPattern = RegExp(r'\[(\d+:\d+\.\d+)\]');
     final bracketMatches = bracketPattern.allMatches(line);
     
@@ -86,7 +85,6 @@ class LrcLine extends UnsyncLyricLine {
       }
     }
 
-    // 尝试解析第二种格式：[mm:ss.ms]<mm:ss.ms>Word<mm:ss.ms>...
     final anglePattern = RegExp(r'<(\d+:\d+\.\d+)>');
     final angleMatches = anglePattern.allMatches(line);
     
@@ -156,7 +154,8 @@ class LrcLine extends UnsyncLyricLine {
     try {
       final minutes = int.parse(parts[0]);
       final seconds = double.parse(parts[1]);
-      final totalMs = (minutes * 60 + seconds) * 1000;
+      // 修复类型转换问题：将double转换为int
+      final totalMs = (minutes * 60 * 1000) + (seconds * 1000).round();
       return Duration(milliseconds: max(totalMs - (offset ?? 0), 0));
     } catch (_) {
       return null;
@@ -180,10 +179,11 @@ class Lrc extends Lyric {
 
   Lrc _combineLrcLine(String separator) {
     final combined = <LrcLine>[];
-    var currentLine = lines.first;
+    // 添加类型转换
+    var currentLine = lines.first as LrcLine;
 
     for (int i = 1; i < lines.length; i++) {
-      final line = lines[i];
+      final line = lines[i] as LrcLine;
       if (line.start == currentLine.start) {
         final mergedContent = '${currentLine.content}$separator${line.content}';
         final mergedTimings = [
@@ -210,7 +210,6 @@ class Lrc extends Lyric {
     final lines = <LrcLine>[];
     int? offset;
 
-    // 解析offset
     final offsetMatch = RegExp(r'\[offset:\s*([+-]?\d+)\s*\]').firstMatch(lrc);
     if (offsetMatch != null) {
       offset = int.tryParse(offsetMatch.group(1) ?? '');
@@ -223,14 +222,13 @@ class Lrc extends Lyric {
 
     if (lines.isEmpty) return null;
 
-    // 计算持续时间
     for (int i = 0; i < lines.length; i++) {
       final current = lines[i];
       if (current.wordTimings?.isNotEmpty ?? false) {
         final lastWord = current.wordTimings!.last;
         current.length = lastWord.end - current.start;
       } else if (i < lines.length - 1) {
-        current.length = lines[i + 1].start - current.start;
+        current.length = (lines[i + 1] as LrcLine).start - current.start;
       } else {
         current.length = Duration.zero;
       }
