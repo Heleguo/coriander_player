@@ -34,8 +34,6 @@ class SettingsPage extends StatelessWidget {
           SizedBox(height: 16.0),
           ArtistSeparatorEditor(),
           SizedBox(height: 16.0),
-          CreateIssueTile(),
-          SizedBox(height: 16.0),
           CheckForUpdate(),
         ],
       ),
