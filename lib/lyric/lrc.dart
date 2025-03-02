@@ -1,5 +1,3 @@
-// lib/lyric/lrc.dart
-
 import 'dart:convert';
 import 'dart:math';
 
@@ -16,8 +14,8 @@ class LrcWord extends SyncLyricWord {
 
 class LrcLine extends SyncLyricLine {
   final List<LrcWord> words;
-  String? translation;
-  bool isBlank;
+  final String? translation;
+  final bool isBlank;
   
   @override
   final Duration length;
@@ -25,11 +23,10 @@ class LrcLine extends SyncLyricLine {
   LrcLine(
     Duration start,
     this.length,
-    this.words, [
+    this.words, {
     this.translation,
-  ]) : super(start, length) {
-    isBlank = words.isEmpty || words.every((w) => w.content.trim().isEmpty);
-  }
+  }) : super(start, length), 
+       isBlank = (words.isEmpty || words.every((w) => w.content.trim().isEmpty));
 
   static LrcLine defaultLine = LrcLine(
     Duration.zero,
@@ -46,7 +43,7 @@ class LrcLine extends SyncLyricLine {
     Duration lineStart = Duration.zero;
     Duration lineEnd = Duration.zero;
 
-    // 解析第一种增强格式
+    // 解析增强格式1: [time]word[time]word
     final bracketMatches = RegExp(r'\[(\d{2}:\d{2}\.\d{2})\]').allMatches(line);
     if (bracketMatches.length > 1) {
       Duration? prevTime;
@@ -69,7 +66,7 @@ class LrcLine extends SyncLyricLine {
       return LrcLine(lineStart, lineEnd - lineStart, words);
     }
 
-    // 解析第二种增强格式
+    // 解析增强格式2: [time]<time>word<time>
     final angleMatches = RegExp(r'<(\d{2}:\d{2}\.\d{2})>').allMatches(line);
     if (angleMatches.isNotEmpty) {
       final lineStartMatch = RegExp(r'^\[(\d{2}:\d{2}\.\d{2})\]').firstMatch(line);
@@ -95,7 +92,7 @@ class LrcLine extends SyncLyricLine {
       }
     }
 
-    // 解析普通LRC格式
+    // 解析普通LRC
     final standardLine = _parseStandardLine(line, offset);
     if (standardLine != null) {
       return LrcLine(
@@ -118,7 +115,7 @@ class LrcLine extends SyncLyricLine {
 
     return LrcLine(
       time ?? Duration.zero,
-      Duration.zero, // 稍后计算
+      Duration.zero,
       [LrcWord(time ?? Duration.zero, Duration.zero, content)],
     );
   }
@@ -167,13 +164,22 @@ class Lrc extends Lyric {
     // 计算行持续时间
     for (int i = 0; i < lines.length; i++) {
       if (i < lines.length - 1) {
-        lines[i].length = lines[i + 1].start - lines[i].start;
+        lines[i] = LrcLine(
+          lines[i].start,
+          lines[i + 1].start - lines[i].start,
+          lines[i].words,
+          translation: lines[i].translation,
+        );
       } else {
-        lines[i].length = const Duration(seconds: 5);
+        lines[i] = LrcLine(
+          lines[i].start,
+          const Duration(seconds: 5),
+          lines[i].words,
+          translation: lines[i].translation,
+        );
       }
     }
 
-    // 合并翻译行
     final result = separator != null ? _combineTranslations(lines, separator) : lines;
     return Lrc(result, source).._sort();
   }
@@ -190,7 +196,7 @@ class Lrc extends Lyric {
           current.start,
           current.length,
           mergedWords,
-          line.translation ?? "",
+          translation: line.translation,
         );
       } else {
         combined.add(current);
