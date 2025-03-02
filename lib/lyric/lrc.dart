@@ -1,3 +1,5 @@
+// lib/lyric/lrc.dart
+
 import 'dart:convert';
 import 'dart:math';
 
@@ -25,10 +27,10 @@ class LrcLine extends SyncLyricLine {
     this.length,
     this.words, {
     this.translation,
-  }) : super(start, length), 
-       isBlank = (words.isEmpty || words.every((w) => w.content.trim().isEmpty));
+  }) : isBlank = (words.isEmpty || words.every((w) => w.content.trim().isEmpty)), 
+       super(start, length); // 修复初始化顺序
 
-  static LrcLine defaultLine = LrcLine(
+  static LrcLine get defaultLine => LrcLine(
     Duration.zero,
     Duration.zero,
     [LrcWord(Duration.zero, Duration.zero, "无歌词")],
