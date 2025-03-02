@@ -1,246 +1,239 @@
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:coriander_player/library/audio_library.dart';
 import 'package:coriander_player/lyric/lyric.dart';
 import 'package:coriander_player/src/rust/api/tag_reader.dart';
 
-class WordTiming {
-  final Duration start;
-  final Duration end;
-  final String word;
-
-  WordTiming(this.start, this.end, this.word);
+class LrcWord extends SyncLyricWord {
+  LrcWord(super.start, super.length, super.content);
 
   @override
-  String toString() => '[$start-$end]$word';
+  String toString() => '[$start-$length]$content';
 }
 
-class LrcLine extends UnsyncLyricLine {
-  bool isBlank;
-  Duration length;
-  List<WordTiming>? wordTimings;
+class LrcLine extends SyncLyricLine {
+  final List<LrcWord> words;
+  String? translation;
 
   LrcLine(
     super.start,
-    super.content, {
-    required this.isBlank,
-    this.length = Duration.zero,
-    this.wordTimings,
-  });
-
-  static LrcLine defaultLine = LrcLine(
-    Duration.zero,
-    "无歌词",
-    isBlank: false,
-    length: Duration.zero,
-  );
+    super.length,
+    this.words, [
+    this.translation,
+  ]);
 
   @override
-  String toString() {
-    return {
-      "time": start.toString(),
-      "content": content,
-      "wordTimings": wordTimings?.join(',')
-    }.toString();
-  }
+  String get content => words.map((w) => w.content).join();
 
   static LrcLine? fromLine(String line, [int? offset]) {
-    final enhancedLine = _parseEnhancedLine(line, offset);
-    if (enhancedLine != null) return enhancedLine;
-    return _parseStandardLine(line, offset);
-  }
+    final words = <LrcWord>[];
+    Duration lineStart = Duration.zero;
+    Duration lineEnd = Duration.zero;
 
-  static LrcLine? _parseEnhancedLine(String line, int? offset) {
-    final bracketPattern = RegExp(r'\[(\d+:\d+\.\d+)\]');
-    final bracketMatches = bracketPattern.allMatches(line);
-    
+    // 解析第一种增强格式：[00:12.34]Hello[00:13.45]World
+    final bracketMatches = RegExp(r'\[(\d{2}:\d{2}\.\d{2})\]').allMatches(line);
     if (bracketMatches.length > 1) {
-      final parts = line.split(']');
-      final timings = <WordTiming>[];
-      Duration? previousTime;
-      String combinedContent = '';
-
-      for (var part in parts.skip(1)) {
-        final timeMatch = bracketPattern.firstMatch(part);
-        if (timeMatch != null) {
-          final time = _parseTime(timeMatch.group(1)!, offset);
-          if (time != null) {
-            final word = part.substring(timeMatch.end).trim();
-            if (previousTime != null && word.isNotEmpty) {
-              timings.add(WordTiming(previousTime, time, word));
-              combinedContent += word;
-            }
-            previousTime = time;
-          }
+      Duration? prevTime;
+      for (int i = 0; i < bracketMatches.length; i++) {
+        final match = bracketMatches.elementAt(i);
+        final time = _parseTime(match.group(1)!, offset);
+        
+        if (i == 0) lineStart = time ?? Duration.zero;
+        
+        if (prevTime != null && time != null) {
+          final wordEnd = i < bracketMatches.length - 1 
+              ? bracketMatches.elementAt(i).end 
+              : line.length;
+          final wordContent = line.substring(match.end, wordEnd).trim();
+          words.add(LrcWord(
+            prevTime,
+            time - prevTime,
+            wordContent
+          ));
         }
+        prevTime = time;
+        lineEnd = time ?? lineEnd;
       }
+      return LrcLine(lineStart, lineEnd - lineStart, words);
+    }
 
-      if (timings.isNotEmpty) {
-        return LrcLine(
-          timings.first.start,
-          combinedContent,
-          isBlank: false,
-          wordTimings: timings,
-        );
+    // 解析第二种增强格式：[00:12.34]<00:12.34>Hello<00:13.45>World
+    final angleMatches = RegExp(r'<(\d{2}:\d{2}\.\d{2})>').allMatches(line);
+    if (angleMatches.isNotEmpty) {
+      final lineStartMatch = RegExp(r'^\[(\d{2}:\d{2}\.\d{2})\]').firstMatch(line);
+      if (lineStartMatch != null) {
+        lineStart = _parseTime(lineStartMatch.group(1)!, offset) ?? Duration.zero;
+        
+        Duration? currentStart;
+        for (int i = 0; i < angleMatches.length; i++) {
+          final match = angleMatches.elementAt(i);
+          final time = _parseTime(match.group(1)!, offset);
+          
+          if (currentStart != null && time != null) {
+            final wordEnd = i < angleMatches.length - 1 
+                ? angleMatches.elementAt(i + 1).start 
+                : line.length;
+            final wordContent = line.substring(match.end, wordEnd).trim();
+            words.add(LrcWord(
+              currentStart,
+              time - currentStart,
+              wordContent
+            ));
+          }
+          currentStart = time;
+          lineEnd = time ?? lineEnd;
+        }
+        return LrcLine(lineStart, lineEnd - lineStart, words);
       }
     }
 
-    final anglePattern = RegExp(r'<(\d+:\d+\.\d+)>');
-    final angleMatches = anglePattern.allMatches(line);
-    
-    if (angleMatches.isNotEmpty) {
-      final lineStart = _parseTime(line.substring(1, line.indexOf(']')), offset);
-      if (lineStart == null) return null;
-
-      final contents = line.split(anglePattern);
-      final timings = <WordTiming>[];
-      String combinedContent = '';
-      Duration? currentStart;
-
-      for (int i = 1; i < contents.length; i += 2) {
-        if (i + 1 >= contents.length) break;
-
-        final timeStr = contents[i];
-        final word = contents[i + 1].trim();
-        final time = _parseTime(timeStr, offset);
-
-        if (time != null && word.isNotEmpty) {
-          if (currentStart != null) {
-            timings.add(WordTiming(currentStart, time, word));
-            combinedContent += word;
-          }
-          currentStart = time;
-        }
-      }
-
-      if (timings.isNotEmpty) {
-        return LrcLine(
-          lineStart,
-          combinedContent,
-          isBlank: false,
-          wordTimings: timings,
-        );
-      }
+    // 解析普通LRC格式
+    final standardLine = _parseStandardLine(line, offset);
+    if (standardLine != null) {
+      return LrcLine(
+        standardLine.start,
+        standardLine.length,
+        [LrcWord(standardLine.start, standardLine.length, standardLine.content)],
+      );
     }
 
     return null;
   }
 
   static LrcLine? _parseStandardLine(String line, int? offset) {
-    final left = line.indexOf("[");
-    final right = line.indexOf("]");
+    final regExp = RegExp(r'^\[(\d{2}:\d{2}\.\d{2})\](.*)');
+    final match = regExp.firstMatch(line);
+    if (match == null) return null;
 
-    if (left == -1 || right == -1) return null;
-
-    final timeStr = line.substring(left + 1, right);
-    final content = line.substring(right + 1)
-        .trim()
-        .replaceAll(RegExp(r"\[\d{2}:\d{2}\.\d{2,}\]"), "");
-
-    final time = _parseTime(timeStr, offset);
-    if (time == null) return null;
+    final time = _parseTime(match.group(1)!, offset);
+    final content = match.group(2)?.trim() ?? '';
 
     return LrcLine(
-      time,
-      content,
-      isBlank: content.isEmpty,
+      time ?? Duration.zero,
+      Duration.zero, // 长度稍后计算
+      [LrcWord(time ?? Duration.zero, Duration.zero, content)],
     );
   }
 
   static Duration? _parseTime(String timeStr, int? offset) {
-    final parts = timeStr.split(":");
+    final parts = timeStr.split(':');
     if (parts.length != 2) return null;
 
     try {
       final minutes = int.parse(parts[0]);
       final seconds = double.parse(parts[1]);
-      // 修复类型转换问题：将double转换为int
       final totalMs = (minutes * 60 * 1000) + (seconds * 1000).round();
       return Duration(milliseconds: max(totalMs - (offset ?? 0), 0));
     } catch (_) {
       return null;
     }
   }
-}
 
-enum LrcSource { local, web }
+  @override
+  String toString() => '[$start-$length]${words.join()}';
+}
 
 class Lrc extends Lyric {
   LrcSource source;
 
   Lrc(super.lines, this.source);
 
-  @override
-  String toString() => {"type": source, "lyric": lines}.toString();
-
-  void _sort() {
-    lines.sort((a, b) => a.start.compareTo(b.start));
-  }
-
-  Lrc _combineLrcLine(String separator) {
-    final combined = <LrcLine>[];
-    // 添加类型转换
-    var currentLine = lines.first as LrcLine;
-
-    for (int i = 1; i < lines.length; i++) {
-      final line = lines[i] as LrcLine;
-      if (line.start == currentLine.start) {
-        final mergedContent = '${currentLine.content}$separator${line.content}';
-        final mergedTimings = [
-          ...?currentLine.wordTimings,
-          ...?line.wordTimings,
-        ];
-        currentLine = LrcLine(
-          currentLine.start,
-          mergedContent,
-          isBlank: false,
-          wordTimings: mergedTimings,
-        );
-      } else {
-        combined.add(currentLine);
-        currentLine = line;
-      }
-    }
-    combined.add(currentLine);
-
-    return Lrc(combined, source);
-  }
-
   static Lrc? fromLrcText(String lrc, LrcSource source, {String? separator}) {
     final lines = <LrcLine>[];
     int? offset;
 
+    // 解析offset
     final offsetMatch = RegExp(r'\[offset:\s*([+-]?\d+)\s*\]').firstMatch(lrc);
     if (offsetMatch != null) {
       offset = int.tryParse(offsetMatch.group(1) ?? '');
     }
 
+    // 解析歌词行
     for (final line in lrc.split('\n')) {
       final parsed = LrcLine.fromLine(line, offset);
       if (parsed != null) lines.add(parsed);
     }
 
-    if (lines.isEmpty) return null;
-
+    // 计算行持续时间
     for (int i = 0; i < lines.length; i++) {
-      final current = lines[i];
-      if (current.wordTimings?.isNotEmpty ?? false) {
-        final lastWord = current.wordTimings!.last;
-        current.length = lastWord.end - current.start;
-      } else if (i < lines.length - 1) {
-        current.length = (lines[i + 1] as LrcLine).start - current.start;
+      if (i < lines.length - 1) {
+        lines[i].length = lines[i + 1].start - lines[i].start;
       } else {
-        current.length = Duration.zero;
+        lines[i].length = const Duration(seconds: 5); // 最后一行默认5秒
       }
     }
 
-    final result = Lrc(lines, source).._sort();
-    return separator != null ? result._combineLrcLine(separator) : result;
+    // 合并翻译行
+    if (separator != null) {
+      return _combineTranslations(lines, source, separator);
+    }
+
+    return Lrc(lines, source).._sort();
+  }
+
+  static Lrc _combineTranslations(List<LrcLine> lines, LrcSource source, String separator) {
+    final combined = <LrcLine>[];
+    var current = lines.first;
+
+    for (int i = 1; i < lines.length; i++) {
+      if (lines[i].start == current.start) {
+        final mergedWords = [...current.words, ...lines[i].words];
+        current = LrcLine(
+          current.start,
+          current.length,
+          mergedWords,
+          lines[i].content, // 保存翻译到translation字段
+        );
+      } else {
+        combined.add(current);
+        current = lines[i];
+      }
+    }
+    combined.add(current);
+
+    return Lrc(combined, source).._sort();
+  }
+
+  void _sort() => lines.sort((a, b) => a.start.compareTo(b.start));
+
+  // 添加空白行处理
+  void addBlankLines() {
+    final formatted = <LrcLine>[];
+    if (lines.isNotEmpty && lines.first.start > const Duration(seconds: 1)) {
+      formatted.add(LrcLine(
+        Duration.zero,
+        lines.first.start,
+        [LrcWord(Duration.zero, lines.first.start, '')],
+      ));
+    }
+
+    for (int i = 0; i < lines.length - 1; i++) {
+      formatted.add(lines[i]);
+      final gap = lines[i + 1].start - (lines[i].start + lines[i].length);
+      if (gap > const Duration(seconds: 1)) {
+        formatted.add(LrcLine(
+          lines[i].start + lines[i].length,
+          gap,
+          [LrcWord(lines[i].start + lines[i].length, gap, '')],
+        ));
+      }
+    }
+
+    if (lines.isNotEmpty) formatted.add(lines.last);
+    lines
+      ..clear()
+      ..addAll(formatted);
   }
 
   static Future<Lrc?> fromAudioPath(Audio audio, {String? separator}) async {
     final lyricText = await getLyricFromPath(path: audio.path);
     if (lyricText == null) return null;
-    return Lrc.fromLrcText(lyricText, LrcSource.local, separator: separator);
+    
+    final lrc = Lrc.fromLrcText(lyricText, LrcSource.local, separator: separator);
+    lrc?.addBlankLines();
+    return lrc;
   }
 }
+
+enum LrcSource { local, web }
