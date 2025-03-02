@@ -1,3 +1,5 @@
+// lib/lyric/lrc.dart
+
 import 'dart:convert';
 import 'dart:math';
 
@@ -15,13 +17,26 @@ class LrcWord extends SyncLyricWord {
 class LrcLine extends SyncLyricLine {
   final List<LrcWord> words;
   String? translation;
+  bool isBlank;
+  
+  @override
+  final Duration length;
 
   LrcLine(
-    super.start,
-    super.length,
+    Duration start,
+    this.length,
     this.words, [
     this.translation,
-  ]);
+  ]) : super(start, length) {
+    isBlank = words.isEmpty || words.every((w) => w.content.trim().isEmpty);
+  }
+
+  static LrcLine defaultLine = LrcLine(
+    Duration.zero,
+    Duration.zero,
+    [LrcWord(Duration.zero, Duration.zero, "无歌词")],
+    translation: "",
+  );
 
   @override
   String get content => words.map((w) => w.content).join();
@@ -31,7 +46,7 @@ class LrcLine extends SyncLyricLine {
     Duration lineStart = Duration.zero;
     Duration lineEnd = Duration.zero;
 
-    // 解析第一种增强格式：[00:12.34]Hello[00:13.45]World
+    // 解析第一种增强格式
     final bracketMatches = RegExp(r'\[(\d{2}:\d{2}\.\d{2})\]').allMatches(line);
     if (bracketMatches.length > 1) {
       Duration? prevTime;
@@ -46,11 +61,7 @@ class LrcLine extends SyncLyricLine {
               ? bracketMatches.elementAt(i).end 
               : line.length;
           final wordContent = line.substring(match.end, wordEnd).trim();
-          words.add(LrcWord(
-            prevTime,
-            time - prevTime,
-            wordContent
-          ));
+          words.add(LrcWord(prevTime, time - prevTime, wordContent));
         }
         prevTime = time;
         lineEnd = time ?? lineEnd;
@@ -58,7 +69,7 @@ class LrcLine extends SyncLyricLine {
       return LrcLine(lineStart, lineEnd - lineStart, words);
     }
 
-    // 解析第二种增强格式：[00:12.34]<00:12.34>Hello<00:13.45>World
+    // 解析第二种增强格式
     final angleMatches = RegExp(r'<(\d{2}:\d{2}\.\d{2})>').allMatches(line);
     if (angleMatches.isNotEmpty) {
       final lineStartMatch = RegExp(r'^\[(\d{2}:\d{2}\.\d{2})\]').firstMatch(line);
@@ -75,11 +86,7 @@ class LrcLine extends SyncLyricLine {
                 ? angleMatches.elementAt(i + 1).start 
                 : line.length;
             final wordContent = line.substring(match.end, wordEnd).trim();
-            words.add(LrcWord(
-              currentStart,
-              time - currentStart,
-              wordContent
-            ));
+            words.add(LrcWord(currentStart, time - currentStart, wordContent));
           }
           currentStart = time;
           lineEnd = time ?? lineEnd;
@@ -111,7 +118,7 @@ class LrcLine extends SyncLyricLine {
 
     return LrcLine(
       time ?? Duration.zero,
-      Duration.zero, // 长度稍后计算
+      Duration.zero, // 稍后计算
       [LrcWord(time ?? Duration.zero, Duration.zero, content)],
     );
   }
@@ -134,6 +141,8 @@ class LrcLine extends SyncLyricLine {
   String toString() => '[$start-$length]${words.join()}';
 }
 
+enum LrcSource { local, web }
+
 class Lrc extends Lyric {
   LrcSource source;
 
@@ -143,84 +152,83 @@ class Lrc extends Lyric {
     final lines = <LrcLine>[];
     int? offset;
 
-    // 解析offset
     final offsetMatch = RegExp(r'\[offset:\s*([+-]?\d+)\s*\]').firstMatch(lrc);
     if (offsetMatch != null) {
       offset = int.tryParse(offsetMatch.group(1) ?? '');
     }
 
-    // 解析歌词行
     for (final line in lrc.split('\n')) {
       final parsed = LrcLine.fromLine(line, offset);
       if (parsed != null) lines.add(parsed);
     }
+
+    if (lines.isEmpty) return null;
 
     // 计算行持续时间
     for (int i = 0; i < lines.length; i++) {
       if (i < lines.length - 1) {
         lines[i].length = lines[i + 1].start - lines[i].start;
       } else {
-        lines[i].length = const Duration(seconds: 5); // 最后一行默认5秒
+        lines[i].length = const Duration(seconds: 5);
       }
     }
 
     // 合并翻译行
-    if (separator != null) {
-      return _combineTranslations(lines, source, separator);
-    }
-
-    return Lrc(lines, source).._sort();
+    final result = separator != null ? _combineTranslations(lines, separator) : lines;
+    return Lrc(result, source).._sort();
   }
 
-  static Lrc _combineTranslations(List<LrcLine> lines, LrcSource source, String separator) {
+  static List<LrcLine> _combineTranslations(List<LrcLine> lines, String separator) {
     final combined = <LrcLine>[];
     var current = lines.first;
 
     for (int i = 1; i < lines.length; i++) {
-      if (lines[i].start == current.start) {
-        final mergedWords = [...current.words, ...lines[i].words];
+      final line = lines[i];
+      if (line.start == current.start) {
+        final mergedWords = [...current.words, ...line.words];
         current = LrcLine(
           current.start,
           current.length,
           mergedWords,
-          lines[i].content, // 保存翻译到translation字段
+          line.translation ?? "",
         );
       } else {
         combined.add(current);
-        current = lines[i];
+        current = line;
       }
     }
     combined.add(current);
-
-    return Lrc(combined, source).._sort();
+    return combined;
   }
 
-  void _sort() => lines.sort((a, b) => a.start.compareTo(b.start));
+  void _sort() => lines.sort((a, b) => (a as LrcLine).start.compareTo((b as LrcLine).start));
 
-  // 添加空白行处理
   void addBlankLines() {
     final formatted = <LrcLine>[];
-    if (lines.isNotEmpty && lines.first.start > const Duration(seconds: 1)) {
+    if (lines.isNotEmpty && (lines.first as LrcLine).start > const Duration(seconds: 1)) {
       formatted.add(LrcLine(
         Duration.zero,
-        lines.first.start,
-        [LrcWord(Duration.zero, lines.first.start, '')],
+        (lines.first as LrcLine).start,
+        [LrcWord(Duration.zero, (lines.first as LrcLine).start, '')],
       ));
     }
 
     for (int i = 0; i < lines.length - 1; i++) {
-      formatted.add(lines[i]);
-      final gap = lines[i + 1].start - (lines[i].start + lines[i].length);
+      final current = lines[i] as LrcLine;
+      final next = lines[i + 1] as LrcLine;
+      
+      formatted.add(current);
+      final gap = next.start - (current.start + current.length);
       if (gap > const Duration(seconds: 1)) {
         formatted.add(LrcLine(
-          lines[i].start + lines[i].length,
+          current.start + current.length,
           gap,
-          [LrcWord(lines[i].start + lines[i].length, gap, '')],
+          [LrcWord(current.start + current.length, gap, '')],
         ));
       }
     }
 
-    if (lines.isNotEmpty) formatted.add(lines.last);
+    if (lines.isNotEmpty) formatted.add(lines.last as LrcLine);
     lines
       ..clear()
       ..addAll(formatted);
@@ -235,5 +243,3 @@ class Lrc extends Lyric {
     return lrc;
   }
 }
-
-enum LrcSource { local, web }
